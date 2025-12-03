@@ -1,0 +1,16 @@
+<launch>
+    <node name="pipeline_scanner" pkg="pipeline_monitoring_starwars" type="pipeline_scanner.py" output="screen">
+
+        <param name="flight_height" value="1.5"/>
+        <param name="scan_speed" value="0.25"/>
+        <param name="navigation_threshold" value="0.2"/>
+        
+        <param name="grid_width" value="10"/>
+        <param name="grid_height" value="10"/>
+        <param name="grid_spacing" value="1.0"/>
+        
+        <param name="detection_threshold" value="75"/>
+        <param name="uniqueness_radius" value="0.8"/>
+    </node>
+    
+</launch>
