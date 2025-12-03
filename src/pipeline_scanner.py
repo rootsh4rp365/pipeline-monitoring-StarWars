@@ -6,23 +6,24 @@ import rospy
 import cv2
 import numpy as np
 import time
+from collections import defaultdict
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 from cv_bridge import CvBridge
 from clover import srv
-from std_srvs.srv import Trigger
 import threading
 import json
 
 
 class TubeBranch:
-    def __init__(self, tube_id, x, y, z, confidence=0.0):
+    def __init__(self, tube_id, x, y, z, confidence=0.0, detections=1):
         self.id = tube_id
         self.x = x
         self.y = y
         self.z = z
         self.confidence = confidence
-        self.detection_count = 1
+        self.detections = detections
 
     def to_dict(self):
         return {
@@ -31,7 +32,7 @@ class TubeBranch:
             'y': float(self.y),
             'z': float(self.z),
             'confidence': float(self.confidence),
-            'detections': int(self.detection_count)
+            'detections': int(self.detections)
         }
 
     def update_position(self, new_x, new_y, new_z):
@@ -39,7 +40,7 @@ class TubeBranch:
         self.y = (self.y + new_y) / 2.0
         self.z = (self.z + new_z) / 2.0
         self.confidence += 1.0
-        self.detection_count += 1
+        self.detections += 1
 
 
 class ArUcoMarkerMap:
@@ -147,6 +148,18 @@ class PipelineScannerNode:
         self.grid_spacing = rospy.get_param('~grid_spacing', 1.0)
         self.aruco_map = ArUcoMarkerMap(self.grid_width, self.grid_height, self.grid_spacing)
 
+        self.mission_running = False
+        self.killed = False
+        self.mission_paused = False
+        self.mission_thread = None
+
+        self.mission_control_sub = rospy.Subscriber(
+            '/mission_control',
+            String,
+            self.mission_control_callback,
+            queue_size=10
+        )
+
         self.bridge = CvBridge()
         self.latest_frame = None
         self.frame_lock = threading.Lock()
@@ -157,17 +170,74 @@ class PipelineScannerNode:
         )
 
         self.tubes = []
-        self.detected_branches = {}
+        self.tube_centers = defaultdict(list)
         self.detection_threshold = rospy.get_param('~detection_threshold', 75)
         self.uniqueness_radius = rospy.get_param('~uniqueness_radius', 0.8)
         self.branch_pub = rospy.Publisher('/tubes', String, queue_size=10)
 
-        rospy.loginfo("Pipeline Scan Begin")
+        rospy.loginfo("Waiting to start...")
 
     def image_callback(self, data):
         frame = self.bridge.imgmsg_to_cv2(data, 'bgr8')
         with self.frame_lock:
             self.latest_frame = frame
+
+    def mission_control_callback(self, msg):
+        cmd = json.loads(msg.data)
+        command = cmd.get('command', '')
+
+        if command == 'start':
+            self.start_mission()
+        elif command == 'stop':
+            self.stop_mission()
+        elif command == 'kill':
+            self.kill_mission()
+        elif command == 'pause':
+            self.pause_mission()
+        elif command == 'resume':
+            self.resume_mission()
+
+        
+    def start_mission(self):
+        if self.mission_running:
+            rospy.logwarn("Mission already running")
+            return
+
+        self.mission_running = True
+        self.mission_paused = False
+        self.tubes = []
+        self.tube_centers = defaultdict(list)
+
+        self.mission_thread = threading.Thread(target=self.main, daemon=True)
+        self.mission_thread.start()
+
+        rospy.loginfo("Mission started")
+
+
+    def stop_mission(self):
+        if not self.mission_running:
+            return
+
+        self.mission_running = False
+        rospy.loginfo("Stopping mission, Returning to start...")
+
+
+    def kill_mission(self):
+        self.mission_running = False
+        self.killed = True
+        rospy.logerr("KILL SWITCH ACTIVATED - DISARMING DRONE")
+
+        self.land()
+        rospy.sleep(2.0)
+
+    def pause_mission(self):
+        self.mission_paused = True
+        rospy.loginfo("Mission paused")
+
+
+    def resume_mission(self):
+        self.mission_paused = False
+        rospy.loginfo("Mission resumed")
 
     def get_current_position(self, frame_id='aruco_map'):
         try:
@@ -186,6 +256,12 @@ class PipelineScannerNode:
             if pos is None:
                 rospy.sleep(0.1)
                 continue
+            
+            if not self.mission_running and (target_x != 0.0 or target_y != 0.0):
+                return True
+            
+            while self.mission_paused and self.mission_running:
+                rospy.sleep(0.5)
 
             dx = abs(pos[0] - target_x) if strict else 0
             dy = abs(pos[1] - target_y) if strict else 0
@@ -210,6 +286,7 @@ class PipelineScannerNode:
             speed=self.scan_speed,
             auto_arm=auto_arm
         )
+
         return self.wait_for_position(x, y, z, strict=strict)
 
     def detect_tubes_in_frame(self):
@@ -323,7 +400,7 @@ class PipelineScannerNode:
 
         return tube
 
-    def scan_grid(self):
+    def main(self):
         start_position = self.get_current_position(frame_id='map')
         rospy.loginfo("Taking off to %.2fm", self.flight_height)
         if not self.navigate_to_point(
@@ -343,7 +420,16 @@ class PipelineScannerNode:
         total_points = 15
 
         for i in range(0, self.grid_width, 2):
+            if not self.mission_running:
+                break
+
             for j in range(0, self.grid_height, 4):
+                if not self.mission_running:
+                    break
+
+                while self.mission_paused and self.mission_running:
+                    rospy.sleep(0.5)
+                
                 scan_x = i * self.grid_spacing
                 scan_y = j * self.grid_spacing
 
@@ -351,7 +437,7 @@ class PipelineScannerNode:
                     rospy.logwarn("Failed to reach scan point")
                     continue
 
-                rospy.sleep(3.0)
+                rospy.sleep(5.0)
 
                 tubes = self.detect_tubes_in_frame()
 
@@ -361,74 +447,42 @@ class PipelineScannerNode:
                         self.latest_frame
                     )
 
-                    rospy.sleep(0.1)
+                    rospy.sleep(0.5)
 
                 scanned_points += 1
                 rospy.loginfo("Progress: %d/%d",
                               scanned_points, total_points)
 
-        rospy.loginfo("Returning to start position")
-        if not self.navigate_to_point(
-                0.0,
-                0.0,
-                self.flight_height,
-        ):
-            rospy.logwarn("Failed to return to start")
+        if not self.killed:
+            rospy.loginfo("Returning to start position")
+            if not self.navigate_to_point(
+                    0.0,
+                    0.0,
+                    self.flight_height,
+            ):
+                rospy.logwarn("Failed to return to start")
 
-        rospy.sleep(2.0)
-        rospy.loginfo("Landing...")
-        try:
+            rospy.sleep(2.0)
+            rospy.loginfo("Landing...")
             self.land()
             rospy.sleep(2.0)
-        except rospy.ServiceException as e:
-            rospy.logwarn("Landing error: %s", str(e))
 
-        rospy.loginfo("Results:")
-        rospy.loginfo("Total branches found: %d", len(self.tubes))
-        rospy.loginfo("Branch coordinates (aruco_map):")
-        for i, tube in enumerate(self.tubes):
-            rospy.loginfo("  Branch %d: x=%.2fm, y=%.2fm, z=%.2fm (confidence=%d)",
-                          i, tube.x, tube.y, tube.z, tube.confidence)
-        # self.publish_final_results()
+            rospy.loginfo("Results:")
+            rospy.loginfo("Total branches found: %d", len(self.tubes))
+            rospy.loginfo("Branch coordinates (aruco_map):")
+            for i, tube in enumerate(self.tubes):
+                rospy.loginfo("  Branch %d: x=%.2fm, y=%.2fm, z=%.2fm (confidence=%d)",
+                            i, tube.x, tube.y, tube.z, tube.confidence)
 
         return True
 
-    def publish_final_results(self):
-        """
-        rospy.loginfo("Publishing final results...")
-        
-        result_data = []
-        for tube in self.tubes:
-            result_data.append(tube.to_dict())
-        
-        msg = String()
-        msg.data = json.dumps({
-            'timestamp': rospy.get_time(),
-            'frame_id': 'aruco_map',
-            'tubes': result_data,
-            'total': len(self.tubes),
-            'status': 'final'
-        })
-        
-        self.branch_pub.publish(msg)
-        """
-
     def run(self):
-        rospy.sleep(1)
-        try:
-            success = self.scan_grid()
-            if success:
-                rospy.loginfo("Mission completed successfully")
-            else:
-                rospy.logerr("Mission failed")
-        except Exception as e:
-            rospy.logerr("Error: %s", str(e))
+        rospy.spin()
 
 
 if __name__ == '__main__':
     try:
         scanner = PipelineScannerNode()
         scanner.run()
-        rospy.spin()
     except rospy.ROSInterruptException:
         rospy.loginfo("Node shutdown")

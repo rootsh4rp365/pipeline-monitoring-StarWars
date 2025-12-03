@@ -9,7 +9,7 @@
         <param name="grid_height" value="10"/>
         <param name="grid_spacing" value="1.0"/>
         
-        <param name="detection_threshold" value="75"/>
+        <param name="detection_threshold" value="150"/>
         <param name="uniqueness_radius" value="0.8"/>
     </node>
     

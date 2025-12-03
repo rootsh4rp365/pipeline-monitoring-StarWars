@@ -4,10 +4,11 @@
 import math
 import random
 import argparse
+import os
 
 
 class PipelineGenerator:
-    def __init__(self, seed=None):
+    def __init__(self):
         self.main_start = (1.0, 1.0)
         self.main_min_length = 5.0
         self.main_max_length = 10.0
@@ -82,7 +83,7 @@ class PipelineGenerator:
         while len(self.branches) < self.branch_count and attempts < max_attempts:
             attempts += 1
             
-            distance_along_pipe = random.uniform(0.5, total_length - 0.5)
+            distance_along_pipe = random.uniform(1, total_length - 1)
             current_distance = 0
             branch_point = None
             branch_angle = None
@@ -308,18 +309,18 @@ def main():
     parser.add_argument(
         '--output',
         type=str,
-        default='../worlds/pipeline_world.world',
+        default=f'{os.path.dirname(os.path.abspath(__file__))}/../worlds/pipeline_world.world',
     )
     parser.add_argument(
         '--map',
         type=str,
-        default='../map/map.txt',
+        default=f'{os.path.dirname(os.path.abspath(__file__))}/../map/map.txt',
     )
     
     args = parser.parse_args()
     
     try:
-        generator = PipelineGenerator(seed=args.seed)
+        generator = PipelineGenerator()
         generator.generate_world_sdf(args.output)
         generator.save_aruco_map(args.map)
         
