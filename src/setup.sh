@@ -30,10 +30,6 @@ echo ""
 mkdir -p "${PROJECT_DIR}/worlds"
 mkdir -p "${PROJECT_DIR}/map"
 
-echo -e "Генерация мира..."
-PYTHONIOENCODING=utf-8 python3 "${SCRIPT_DIR}/generate_world.py"
-echo ""
-
 echo -e "Загрузка необходимых моделей..."
 mkdir -p "${HOME}/.gazebo/models"
 cp -r "${PROJECT_DIR}/resources/." "${HOME}/.gazebo/models/"
@@ -45,6 +41,15 @@ catkin_make
 echo ""
 source "${CATKIN_WS}/devel/setup.bash"
 echo -e "Пакет собран"
+echo ""
+
+echo -e "Установка прав доступа..."
+chmod -R +x ${SCRIPT_DIR}
+chmod -R +x ${PROJECT_DIR}/web
+echo ""
+
+echo -e "Генерация мира..."
+PYTHONIOENCODING=utf-8 python3 "${SCRIPT_DIR}/generate_world.py"
 echo ""
 
 echo -e "Для запуска симуляции:"
