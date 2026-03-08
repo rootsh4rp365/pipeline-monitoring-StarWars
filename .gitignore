@@ -2,3 +2,4 @@
 .idea/
 map/
 worlds/
+__pycache__/
